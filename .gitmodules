@@ -4,3 +4,7 @@
 [submodule "scraper"]
 	path = scraper
 	url = ./scraper/
+[submodule "./frontend/"]
+	url = git@github.com:Ponynjaa/lunchplanner_frontend.git
+[submodule "./scraper/"]
+	url = git@github.com:Ponynjaa/lunchplanner_scraper.git
