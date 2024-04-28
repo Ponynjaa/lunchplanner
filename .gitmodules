@@ -1,0 +1,6 @@
+[submodule "scraper"]
+	path = scraper
+	url = git@github.com:Ponynjaa/lunchplanner_scraper.git
+[submodule "frontend"]
+	path = frontend
+	url = git@github.com:Ponynjaa/lunchplanner_frontend.git
