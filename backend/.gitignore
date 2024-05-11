@@ -1,0 +1,7 @@
+/node_modules
+/.env
+/error.log
+/project/node_modules
+/project/dist
+/project/.env
+/project/error.log
