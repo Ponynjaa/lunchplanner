@@ -21,8 +21,8 @@ app.use(cors());
 const keycloak = new  Keycloak({}, keycloakConfig);
 app.use(keycloak.middleware());
 
-app.use('/', webRoutes);
 app.use('/api/v1', [
+	webRoutes,
 	restaurantRoutes
 ]);
 

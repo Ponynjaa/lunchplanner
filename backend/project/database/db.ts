@@ -14,10 +14,6 @@ const pool = new Pool({
 	database: dbName
 });
 
-pool.on('connect', () => {
-	console.log('Connected to the database');
-});
-
 pool.on('error', (err: Error) => {
 	console.error('Error connecting to the database:');
 	throw err;
