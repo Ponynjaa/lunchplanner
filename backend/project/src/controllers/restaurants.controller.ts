@@ -49,10 +49,16 @@ export const getRestaurantById = async (req: Request, res: Response, next: NextF
 export const getAllKitchens = async (req: Request, res: Response, next: NextFunction) => {
 	try {
 		const result = await db.query(`
-			SELECT k.description_de AS description, ARRAY_AGG(sk.description_de) AS subkitchens
+			SELECT k.id AS id, k.description_de AS description,
+				JSON_AGG(
+					JSON_BUILD_OBJECT(
+						'id', sk.id,
+						'description', sk.description_de
+					)
+				) AS subkitchens
 			FROM lunchplanner.subkitchens sk
 			JOIN lunchplanner.kitchens k ON k.id = sk.kitchen_id
-			GROUP BY k.description_de;
+			GROUP BY k.id, k.description_de;
 		`);
 		res.status(200).json(result.rows);
 	} catch (err) {
@@ -64,14 +70,20 @@ export const getAllKitchens = async (req: Request, res: Response, next: NextFunc
 export const getCurrentlyUsedKitchens = async (req: Request, res: Response, next: NextFunction) => {
 	try {
 		const result = await db.query(`
-			SELECT k.description_de AS description, ARRAY_AGG(sk.description_de) AS subkitchens
+			SELECT k.id AS id, k.description_de AS description,
+				JSON_AGG(
+					JSON_BUILD_OBJECT(
+						'id', sk.id,
+						'description', sk.description_de
+					)
+				) AS subkitchens
 			FROM lunchplanner.subkitchens sk
 			JOIN lunchplanner.kitchens k ON k.id = sk.kitchen_id
 			WHERE sk.id IN (
 				SELECT rs.subkitchen_id
 				FROM lunchplanner.restaurants_subkitchens rs
 			)
-			GROUP BY k.description_de;
+			GROUP BY k.id, k.description_de;
 		`);
 		res.status(200).json(result.rows);
 	} catch (err) {
