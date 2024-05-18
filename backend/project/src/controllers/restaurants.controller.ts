@@ -4,7 +4,12 @@ import * as db from '../../database/db';
 export const getAllRestaurants = async (req: Request, res: Response, next: NextFunction) => {
 	try {
 		const result = await db.query(`
-			SELECT r.id AS id, r.name AS name, r.logourl AS logourl, r.city AS city, r.street AS street, ARRAY_AGG(sk.description_de) AS subkitchens
+			SELECT r.id AS id, r.name AS name, r.logourl AS logourl, r.city AS city, r.street AS street, JSON_AGG(
+				JSON_BUILD_OBJECT(
+					'id', sk.id,
+					'description', sk.description_de
+				)
+			) AS subkitchens
 			FROM lunchplanner.restaurants r
 			JOIN lunchplanner.restaurants_subkitchens rs ON r.id = rs.restaurant_id
 			JOIN lunchplanner.subkitchens sk ON sk.id = rs.subkitchen_id
