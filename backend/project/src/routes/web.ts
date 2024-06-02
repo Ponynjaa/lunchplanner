@@ -7,9 +7,5 @@ router.get('/health', (req, res) => {
 	res.json({ pong: ping });
 });
 
-// router.use('/api/v1', [
-// 	userRoutes
-// ]);
-
 // Export the router
 export default router;

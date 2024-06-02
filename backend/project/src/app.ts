@@ -2,11 +2,13 @@ import 'dotenv/config';
 
 import express from 'express';
 import cors from 'cors';
-import webRoutes from './routes/web';
+import fileUpload from 'express-fileupload';
+
 import errorHandler from './middleware/errorHandler';
-import Keycloak from 'keycloak-connect';
-import keycloakConfig from './config/keycloak.config';
+import { keycloak } from './config/keycloak.config';
+import webRoutes from './routes/web';
 import restaurantRoutes from './routes/restaurants';
+import userRoutes from './routes/user';
 
 const app = express();
 
@@ -16,14 +18,14 @@ app.use(express.json());
 app.use(express.urlencoded({
 	extended: true
 }));
-app.use(cors());
-
-const keycloak = new  Keycloak({}, keycloakConfig);
+app.use(fileUpload());
+app.use(cors({ origin: true }));
 app.use(keycloak.middleware());
 
 app.use('/api/v1', [
 	webRoutes,
-	restaurantRoutes
+	restaurantRoutes,
+	userRoutes
 ]);
 
 app.use(errorHandler);
