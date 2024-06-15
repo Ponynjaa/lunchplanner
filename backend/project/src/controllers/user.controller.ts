@@ -39,7 +39,7 @@ export const uploadUserImage = async (req: Request, res: Response, next: NextFun
 
 			const uploadPath = path.join(userImagesDir, `${userId}${fileExtension}`);
 			await uploadedImage.mv(uploadPath);
-	
+
 			res.status(200).json({ success: true });
 		});
 

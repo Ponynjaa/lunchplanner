@@ -1,2 +1,2 @@
 export { uploadUserImage, getUserImage } from './user.controller';
-export { getAllRestaurants, getRestaurantById, getAllKitchens, getCurrentlyUsedKitchens } from './restaurants.controller';
+export { getAllCustomRestaurants, getCustomRestaurantDetails, getAllKitchens, getCurrentlyUsedKitchens, getAllLieferandoRestaurants } from './restaurants.controller';
