@@ -81,6 +81,7 @@ export const getAllLieferandoRestaurants = async (req: Request, res: Response, n
 				logourl: restaurant.logoUrl,
 				city: restaurant.address.city,
 				street: restaurant.address.street,
+				distance: restaurant.distance,
 				deliveryMethods: restaurant.deliveryMethods,
 				deliveryCosts: restaurant.deliveryCosts,
 				estimatedDeliveryTime: restaurant.estimatedDeliveryTime,
