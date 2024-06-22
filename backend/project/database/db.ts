@@ -20,3 +20,4 @@ pool.on('error', (err: Error) => {
 });
 
 export const query = (text: string, params?: any[]) => pool.query(text, params);
+export const getClient = () => pool.connect();

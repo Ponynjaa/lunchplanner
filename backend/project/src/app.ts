@@ -3,6 +3,8 @@ import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import fileUpload from 'express-fileupload';
+import fsp from 'fs/promises';
+import path from 'path';
 
 import errorHandler from './middleware/errorHandler';
 import { keycloak } from './config/keycloak.config';
@@ -11,6 +13,7 @@ import restaurantRoutes from './routes/restaurants';
 import userRoutes from './routes/user';
 
 const app = express();
+init();
 
 const PORT = process.env.PORT || 3000;
 
@@ -30,8 +33,21 @@ app.use('/api/v1', [
 
 app.use(errorHandler);
 
+app.use('/restaurantImages', express.static(path.join(__dirname, '../.customRestaurantImages')));
+
 app.listen(PORT, () => {
 	console.log(`Server is running on port ${PORT}`);
 });
+
+async function init () {
+	try {
+		await fsp.mkdir(path.join(__dirname, '../.customRestaurantImages'));
+		await fsp.mkdir(path.join(__dirname, '../.userImages'));
+	} catch (error: any) {
+		if (error.code !== 'EEXIST') {
+			console.error(error);
+		}
+	}
+}
 
 export default app;

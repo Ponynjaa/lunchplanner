@@ -1,11 +1,14 @@
 import { Request, Response, NextFunction } from 'express';
+import path from 'path';
+import fs from 'fs';
+import fsp from 'fs/promises';
 import * as db from '../../database/db';
 import { takeaway } from '../config/takeaway.config';
 
 export const getAllCustomRestaurants = async (req: Request, res: Response, next: NextFunction) => {
 	try {
 		const result = await db.query(`
-			SELECT r.id AS id, r.name AS name, r.logourl AS logourl, r.city AS city, r.street AS street, JSON_AGG(
+			SELECT r.id AS id, r.name AS name, r.logourl AS logourl, r.city AS city, r.street AS street, r.delivery AS delivery, r.pickup AS pickup, JSON_AGG(
 				JSON_BUILD_OBJECT(
 					'id', sk.id,
 					'description_de', sk.description_de,
@@ -15,7 +18,7 @@ export const getAllCustomRestaurants = async (req: Request, res: Response, next:
 			FROM lunchplanner.restaurants r
 			JOIN lunchplanner.restaurants_subkitchens rs ON r.id = rs.restaurant_id
 			JOIN lunchplanner.subkitchens sk ON sk.id = rs.subkitchen_id
-			GROUP BY r.id, r.name, r.logourl, r.city, r.street;
+			GROUP BY r.id, r.name, r.logourl, r.city, r.street, r.delivery, r.pickup;
 		`);
 		res.status(200).json(result.rows);
 	} catch (err) {
@@ -28,7 +31,7 @@ export const getCustomRestaurantDetails = async (req: Request, res: Response, ne
 	try {
 		const { id } = req.query;
 		const result = await db.query(`
-			SELECT r.id AS id, r.name AS name, r.logourl AS logourl, r.city AS city, r.street AS street, JSON_AGG(
+			SELECT r.id AS id, r.name AS name, r.logourl AS logourl, r.city AS city, r.street AS street, r.delivery AS delivery, r.pickup AS pickup, JSON_AGG(
 				JSON_BUILD_OBJECT(
 					'id', sk.id,
 					'description_de', sk.description_de,
@@ -39,12 +42,86 @@ export const getCustomRestaurantDetails = async (req: Request, res: Response, ne
 			JOIN lunchplanner.restaurants_subkitchens rs ON r.id = rs.restaurant_id
 			JOIN lunchplanner.subkitchens sk ON sk.id = rs.subkitchen_id
 			WHERE r.id = $1
-			GROUP BY r.id, r.name, r.logourl, r.city, r.street;
+			GROUP BY r.id, r.name, r.logourl, r.city, r.street, r.delivery, r.pickup;
 		`, [id]);
 		res.status(200).json(result.rows[0]);
 	} catch (err) {
 		next(err);
 		res.status(400).send(err);
+	}
+}
+
+export const addCustomRestaurant = async (req: Request, res: Response, next: NextFunction) => {
+	const dbClient = await db.getClient();
+
+	try {
+		if (!req.files?.image) {
+			return res.status(400).send("No image file was sent!");
+		}
+
+		const uploadedImage = req.files.image as any;
+		const mimeType = uploadedImage.mimetype;
+		if (!/^image\//.test(mimeType)) {
+			return res.status(400).send("Invalid mime type " + mimeType);
+		}
+
+		let { name, city, street, subkitchenIds, delivery, pickup } = req.body as any;
+		subkitchenIds = JSON.parse(subkitchenIds);
+
+		await dbClient.query('BEGIN');
+
+		// insert without logourl as the id is being used for the logourl
+		const result = await dbClient.query(`
+			INSERT INTO lunchplanner.restaurants (
+				name, city, street, delivery, pickup
+			) VALUES (
+				$1, $2, $3, $4, $5
+			)
+			RETURNING id;
+		`, [name, city, street, delivery, pickup]);
+		
+		const restaurantId = result.rows[0].id;
+		const fileExtension = /\.[a-zA-Z]+$/.exec(uploadedImage.name);
+		const fileName = `${restaurantId}${fileExtension}`;
+		const logoUrl = `${process.env.SERVER_URL}/restaurantImages/${fileName}`;
+
+		// update just inserted row and set logourl
+		await dbClient.query(`
+			UPDATE lunchplanner.restaurants
+			SET logourl = $1
+			WHERE id = $2;
+		`, [logoUrl, restaurantId]);
+
+		for (const subkitchenId of subkitchenIds) {
+			await dbClient.query(`
+				INSERT INTO lunchplanner.restaurants_subkitchens (restaurant_id, subkitchen_id) VALUES ($1, $2)
+				ON CONFLICT (restaurant_id, subkitchen_id) DO
+				UPDATE SET restaurant_id=$1, subkitchen_id=$2;
+			`, [
+				restaurantId, subkitchenId
+			]);
+		}
+
+		const restaurantImagesDir = path.join(__dirname, '../../.customRestaurantImages');
+		const files = await fsp.readdir(restaurantImagesDir);
+
+		const existingRestaurantImagePath = files.find(file => file.startsWith(`${restaurantId}.`));
+		if (existingRestaurantImagePath) {
+			fs.rmSync(path.join(restaurantImagesDir, existingRestaurantImagePath));
+		}
+
+		const uploadPath = path.join(restaurantImagesDir, fileName);
+		await uploadedImage.mv(uploadPath);
+
+		await dbClient.query('COMMIT');
+
+		res.status(200).json({ success: true, restaurantId: restaurantId, logoUrl: logoUrl });
+	} catch (err) {
+		await dbClient.query('ROLLBACK');
+		next(err);
+		res.status(400).send(err);
+	} finally {
+		dbClient.release();
 	}
 }
 
@@ -130,32 +207,6 @@ export const getAllKitchens = async (req: Request, res: Response, next: NextFunc
 				) AS subkitchens
 			FROM lunchplanner.subkitchens sk
 			JOIN lunchplanner.kitchens k ON k.id = sk.kitchen_id
-			GROUP BY k.id, k.description_de, k.description_en;
-		`);
-		res.status(200).json(result.rows);
-	} catch (err) {
-		next(err);
-		res.status(400).send(err);
-	}
-}
-
-export const getCurrentlyUsedKitchens = async (req: Request, res: Response, next: NextFunction) => {
-	try {
-		const result = await db.query(`
-			SELECT k.id AS id, k.description_de AS description_de, k.description_en AS description_en,
-				JSON_AGG(
-					JSON_BUILD_OBJECT(
-						'id', sk.id,
-						'description_de', sk.description_de,
-						'description_en', sk.description_en
-					)
-				) AS subkitchens
-			FROM lunchplanner.subkitchens sk
-			JOIN lunchplanner.kitchens k ON k.id = sk.kitchen_id
-			WHERE sk.id IN (
-				SELECT rs.subkitchen_id
-				FROM lunchplanner.restaurants_subkitchens rs
-			)
 			GROUP BY k.id, k.description_de, k.description_en;
 		`);
 		res.status(200).json(result.rows);
