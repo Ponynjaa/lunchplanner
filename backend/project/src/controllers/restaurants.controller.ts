@@ -2,8 +2,48 @@ import { Request, Response, NextFunction } from 'express';
 import path from 'path';
 import fs from 'fs';
 import fsp from 'fs/promises';
+import { getUserId } from '../utils/userinfo';
 import * as db from '../../database/db';
 import { takeaway } from '../config/takeaway.config';
+
+export const upvote = async (req: Request, res: Response, next: NextFunction) => {
+	try {
+		const { restaurantId, restaurantName, lieferando } = req.body;
+		const userId = getUserId(req);
+
+		await db.query(`
+			INSERT INTO lunchplanner.restaurant_votes (restaurant_id, restaurant_name, lieferando, user_id, upvote)
+			VALUES ($1, $2, $3, $4, true)
+			ON CONFLICT (restaurant_id, date, user_id) DO
+			UPDATE SET upvote = true;
+		`, [restaurantId, restaurantName, lieferando, userId]);
+
+		res.status(200).json({ success: true });
+	} catch (err) {
+		next(err);
+		res.status(400).send(err);
+	}
+}
+
+export const downvote = async (req: Request, res: Response, next: NextFunction) => {
+	try {
+		const { restaurantId, restaurantName, lieferando } = req.body;
+		const userId = getUserId(req);
+
+		console.log("downvoting...");
+		await db.query(`
+			INSERT INTO lunchplanner.restaurant_votes (restaurant_id, restaurant_name, lieferando, user_id, upvote)
+			VALUES ($1, $2, $3, $4, false)
+			ON CONFLICT (restaurant_id, date, user_id) DO
+			UPDATE SET upvote = false;
+		`, [restaurantId, restaurantName, lieferando, userId]);
+
+		res.status(200).json({ success: true });
+	} catch (err) {
+		next(err);
+		res.status(400).send(err);
+	}
+}
 
 export const getAllCustomRestaurants = async (req: Request, res: Response, next: NextFunction) => {
 	try {
@@ -14,10 +54,11 @@ export const getAllCustomRestaurants = async (req: Request, res: Response, next:
 					'description_de', sk.description_de,
 					'description_en', sk.description_en
 				)
-			) AS subkitchens
+			) AS subkitchens, SUM(CASE WHEN rv.upvote THEN 1 ELSE -1 END) AS votes
 			FROM lunchplanner.restaurants r
 			JOIN lunchplanner.restaurants_subkitchens rs ON r.id = rs.restaurant_id
 			JOIN lunchplanner.subkitchens sk ON sk.id = rs.subkitchen_id
+			LEFT JOIN lunchplanner.restaurant_votes rv ON rv.restaurant_id = r.id AND rv.date = CURRENT_DATE
 			GROUP BY r.id, r.name, r.logourl, r.city, r.street, r.delivery, r.pickup;
 		`);
 		res.status(200).json(result.rows);
@@ -151,8 +192,12 @@ export const getAllLieferandoRestaurants = async (req: Request, res: Response, n
 			});
 		}
 
-		const result = restaurants.map((restaurant) => {
-			return {
+		const result = [];
+		for (const restaurant of restaurants) {
+			const votesResult = await db.query(`SELECT SUM(CASE WHEN upvote THEN 1 ELSE -1 END) AS votes FROM lunchplanner.restaurant_votes WHERE restaurant_id = $1 AND date = CURRENT_DATE;`, [restaurant.id]);
+			const votes = votesResult.rows[0]?.votes ?? null;
+
+			result.push({
 				id: restaurant.id,
 				name: restaurant.name,
 				logourl: restaurant.logoUrl,
@@ -167,6 +212,7 @@ export const getAllLieferandoRestaurants = async (req: Request, res: Response, n
 				eta: restaurant.eta,
 				ratingCount: restaurant.ratingCount,
 				rating: restaurant.rating,
+				votes: votes,
 				subkitchens: restaurant.subKitchens?.ids.map((id) => {
 					id = parseInt(id.toString());
 					return {
@@ -174,8 +220,8 @@ export const getAllLieferandoRestaurants = async (req: Request, res: Response, n
 						...subkitchenMap.get(id)
 					};
 				}) ?? []
-			};
-		});
+			});
+		}
 
 		res.status(200).json(result);
 	} catch (err) {
