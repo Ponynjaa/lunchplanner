@@ -7,6 +7,7 @@ import fsp from 'fs/promises';
 import path from 'path';
 
 import errorHandler from './middleware/errorHandler';
+import { WebSocketConfiguration } from './config/websocket.config';
 import { keycloak } from './config/keycloak.config';
 import webRoutes from './routes/web';
 import restaurantRoutes from './routes/restaurants';
@@ -35,9 +36,11 @@ app.use(errorHandler);
 
 app.use('/restaurantImages', express.static(path.join(__dirname, '../.customRestaurantImages')));
 
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
 	console.log(`Server is running on port ${PORT}`);
 });
+
+export const wss = new WebSocketConfiguration(server);
 
 async function init () {
 	try {

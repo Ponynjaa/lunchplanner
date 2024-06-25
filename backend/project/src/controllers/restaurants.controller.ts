@@ -4,7 +4,18 @@ import fs from 'fs';
 import fsp from 'fs/promises';
 import { getUserId } from '../utils/userinfo';
 import * as db from '../../database/db';
+import { wss } from '../app';
 import { takeaway } from '../config/takeaway.config';
+
+const getCurrentVotes = async (restaurantId: string) => {
+	const result = await db.query(`
+		SELECT SUM(CASE WHEN upvote THEN 1 ELSE -1 END) AS votes
+		FROM lunchplanner.restaurant_votes
+		WHERE date = CURRENT_DATE AND restaurant_id = $1;
+	`, [restaurantId]);
+
+	return result.rows[0].votes;
+}
 
 export const upvote = async (req: Request, res: Response, next: NextFunction) => {
 	try {
@@ -18,6 +29,10 @@ export const upvote = async (req: Request, res: Response, next: NextFunction) =>
 			UPDATE SET upvote = true;
 		`, [restaurantId, restaurantName, lieferando, userId]);
 
+		// notify all clients of new votes for restaurant
+		const votes = await getCurrentVotes(restaurantId);
+		wss.sendMessage({restaurantId, lieferando, votes});
+
 		res.status(200).json({ success: true });
 	} catch (err) {
 		next(err);
@@ -30,13 +45,16 @@ export const downvote = async (req: Request, res: Response, next: NextFunction) 
 		const { restaurantId, restaurantName, lieferando } = req.body;
 		const userId = getUserId(req);
 
-		console.log("downvoting...");
 		await db.query(`
 			INSERT INTO lunchplanner.restaurant_votes (restaurant_id, restaurant_name, lieferando, user_id, upvote)
 			VALUES ($1, $2, $3, $4, false)
 			ON CONFLICT (restaurant_id, date, user_id) DO
 			UPDATE SET upvote = false;
 		`, [restaurantId, restaurantName, lieferando, userId]);
+
+		// notify all clients of new votes for restaurant
+		const votes = await getCurrentVotes(restaurantId);
+		wss.sendMessage({restaurantId, lieferando, votes});
 
 		res.status(200).json({ success: true });
 	} catch (err) {
