@@ -1,2 +1,2 @@
-export { uploadUserImage, getUserImage } from './user.controller';
-export { upvote, downvote, getAllCustomRestaurants, getCustomRestaurantDetails, addCustomRestaurant, getAllKitchens, getAllLieferandoRestaurants } from './restaurants.controller';
+export { uploadUserImage, getUserImage, getUserInfo } from './user.controller.js';
+export { upvote, downvote, removeVote, getAllCustomRestaurants, getCustomRestaurantDetails, addCustomRestaurant, getAllKitchens, getAllLieferandoRestaurants } from './restaurants.controller.js';

@@ -1,11 +1,12 @@
-import ws from 'ws';
+import { WebSocketServer } from 'ws';
 import http from 'http';
 
 export class WebSocketConfiguration {
-	wss: ws.Server;
+	wss: WebSocketServer;
 
 	constructor(server: http.Server) {
-		this.wss = new ws.Server({ server });
+		// TODO: save with keycloak
+		this.wss = new WebSocketServer({ server });
 	}
 
 	sendMessage(msg: any) {

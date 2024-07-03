@@ -1,5 +1,5 @@
 import { Request, Response, NextFunction } from 'express';
-import logger from './logger';
+import logger from './logger.js';
 
 const errorHandler = (err: any, req: Request, res: Response, next: NextFunction) => {
 	const errStatus = err.statusCode || 500;

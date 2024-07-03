@@ -1,20 +1,76 @@
 import { Request, Response, NextFunction } from 'express';
 import path from 'path';
-import fs from 'fs';
 import fsp from 'fs/promises';
-import { getUserId } from '../utils/userinfo';
-import * as db from '../../database/db';
-import { wss } from '../app';
-import { takeaway } from '../config/takeaway.config';
+import { getUserId, getUserInfo } from '../utils/userinfo.js';
+import * as db from '../../database/db.js';
+import { wss } from '../app.js';
+import { takeaway } from '../config/takeaway.config.js';
 
-const getCurrentVotes = async (restaurantId: string) => {
+const __dirname = import.meta.dirname;
+
+const getVoteInfos = async (restaurantId: string) => {
 	const result = await db.query(`
-		SELECT SUM(CASE WHEN upvote THEN 1 ELSE -1 END) AS votes
+		SELECT
+			lieferando,
+			SUM(CASE WHEN upvote THEN 1 ELSE -1 END) AS votes,
+			COALESCE(ARRAY_AGG(user_id) FILTER(WHERE upvote = true), '{}') AS upvotes,
+			COALESCE(ARRAY_AGG(user_id) FILTER(WHERE upvote = false), '{}') AS downvotes
 		FROM lunchplanner.restaurant_votes
-		WHERE date = CURRENT_DATE AND restaurant_id = $1;
+		WHERE date = CURRENT_DATE AND restaurant_id = $1
+		GROUP BY lieferando;
 	`, [restaurantId]);
 
-	return result.rows[0].votes;
+	const infos = result.rows[0] ?? {
+		votes: null,
+		upvotes: [],
+		downvotes: []
+	};
+
+	const getMappedVotes = async (votes: any[]) => {
+		const mappedVotes = [];
+
+		for (const id of votes) {
+			const userInfo = await getUserInfo(id);
+			const userImage = `${process.env.SERVER_URL}/userImages/${id}`;
+			mappedVotes.push({
+				id: id,
+				userImage: userImage,
+				firstName: userInfo?.firstName,
+				lastName: userInfo?.lastName
+			});
+		}
+
+		return mappedVotes;
+	}
+
+	
+	infos.upvotes = await getMappedVotes(infos.upvotes);
+	infos.downvotes = await getMappedVotes(infos.downvotes);
+
+	return infos;
+}
+
+export const removeVote = async (req: Request, res: Response, next: NextFunction) => {
+	try {
+		const { restaurantId } = req.body;
+		const userId = getUserId(req);
+
+		const result = await db.query(`
+			DELETE FROM lunchplanner.restaurant_votes
+			WHERE restaurant_id = $1 AND user_id = $2
+			RETURNING lieferando;
+		`, [restaurantId, userId]);
+		const lieferando = result.rows[0].lieferando;
+
+		// notify all clients of new votes for restaurant
+		const voteInfo = await getVoteInfos(restaurantId);
+		wss.sendMessage({restaurantId, ...voteInfo, lieferando});
+
+		res.status(200).json({ success: true });
+	} catch (err) {
+		next(err);
+		res.status(400).send(err);
+	}
 }
 
 export const upvote = async (req: Request, res: Response, next: NextFunction) => {
@@ -30,8 +86,8 @@ export const upvote = async (req: Request, res: Response, next: NextFunction) =>
 		`, [restaurantId, restaurantName, lieferando, userId]);
 
 		// notify all clients of new votes for restaurant
-		const votes = await getCurrentVotes(restaurantId);
-		wss.sendMessage({restaurantId, lieferando, votes});
+		const voteInfo = await getVoteInfos(restaurantId);
+		wss.sendMessage({restaurantId, ...voteInfo});
 
 		res.status(200).json({ success: true });
 	} catch (err) {
@@ -53,8 +109,8 @@ export const downvote = async (req: Request, res: Response, next: NextFunction) 
 		`, [restaurantId, restaurantName, lieferando, userId]);
 
 		// notify all clients of new votes for restaurant
-		const votes = await getCurrentVotes(restaurantId);
-		wss.sendMessage({restaurantId, lieferando, votes});
+		const voteInfo = await getVoteInfos(restaurantId);
+		wss.sendMessage({restaurantId, ...voteInfo});
 
 		res.status(200).json({ success: true });
 	} catch (err) {
@@ -166,7 +222,7 @@ export const addCustomRestaurant = async (req: Request, res: Response, next: Nex
 
 		const existingRestaurantImagePath = files.find(file => file.startsWith(`${restaurantId}.`));
 		if (existingRestaurantImagePath) {
-			fs.rmSync(path.join(restaurantImagesDir, existingRestaurantImagePath));
+			await fsp.rm(path.join(restaurantImagesDir, existingRestaurantImagePath));
 		}
 
 		const uploadPath = path.join(restaurantImagesDir, fileName);
@@ -210,10 +266,11 @@ export const getAllLieferandoRestaurants = async (req: Request, res: Response, n
 			});
 		}
 
-		const result = [];
+		// TODO: add type in models
+		const result: any[] = [];
 		for (const restaurant of restaurants) {
-			const votesResult = await db.query(`SELECT SUM(CASE WHEN upvote THEN 1 ELSE -1 END) AS votes FROM lunchplanner.restaurant_votes WHERE restaurant_id = $1 AND date = CURRENT_DATE;`, [restaurant.id]);
-			const votes = votesResult.rows[0]?.votes ?? null;
+			const voteInfo = await getVoteInfos(restaurant.id as string);
+			const { votes, upvotes, downvotes } = voteInfo;
 
 			result.push({
 				id: restaurant.id,
@@ -231,7 +288,9 @@ export const getAllLieferandoRestaurants = async (req: Request, res: Response, n
 				ratingCount: restaurant.ratingCount,
 				rating: restaurant.rating,
 				votes: votes,
-				subkitchens: restaurant.subKitchens?.ids.map((id) => {
+				upvotes: upvotes,
+				downvotes: downvotes,
+				subkitchens: restaurant.subKitchens?.ids.map((id: any) => {
 					id = parseInt(id.toString());
 					return {
 						id: id,
