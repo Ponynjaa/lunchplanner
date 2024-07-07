@@ -26,6 +26,10 @@ const getVoteInfos = async (restaurantId: string) => {
 		downvotes: []
 	};
 
+	if (infos.votes !== null) {
+		infos.votes = parseInt(infos.votes);
+	}
+
 	const getMappedVotes = async (votes: any[]) => {
 		const mappedVotes = [];
 
@@ -43,7 +47,6 @@ const getVoteInfos = async (restaurantId: string) => {
 		return mappedVotes;
 	}
 
-	
 	infos.upvotes = await getMappedVotes(infos.upvotes);
 	infos.downvotes = await getMappedVotes(infos.downvotes);
 
@@ -60,13 +63,18 @@ export const removeVote = async (req: Request, res: Response, next: NextFunction
 			WHERE restaurant_id = $1 AND user_id = $2
 			RETURNING lieferando;
 		`, [restaurantId, userId]);
+
+		// need to retrieve lieferando info here as row is deleted
+		// therefore `getVoteInfos` might not be able to retrieve any
+		// rows for this restaurant when this was the last vote
 		const lieferando = result.rows[0].lieferando;
 
 		// notify all clients of new votes for restaurant
 		const voteInfo = await getVoteInfos(restaurantId);
-		wss.sendMessage({restaurantId, ...voteInfo, lieferando});
+		const response = { restaurantId, ...voteInfo, lieferando };
+		wss.sendMessage(response);
 
-		res.status(200).json({ success: true });
+		res.status(200).json(response);
 	} catch (err) {
 		next(err);
 		res.status(400).send(err);
@@ -87,9 +95,10 @@ export const upvote = async (req: Request, res: Response, next: NextFunction) =>
 
 		// notify all clients of new votes for restaurant
 		const voteInfo = await getVoteInfos(restaurantId);
-		wss.sendMessage({restaurantId, ...voteInfo});
+		const response = { restaurantId, ...voteInfo };
+		wss.sendMessage(response);
 
-		res.status(200).json({ success: true });
+		res.status(200).json(response);
 	} catch (err) {
 		next(err);
 		res.status(400).send(err);
@@ -110,9 +119,10 @@ export const downvote = async (req: Request, res: Response, next: NextFunction) 
 
 		// notify all clients of new votes for restaurant
 		const voteInfo = await getVoteInfos(restaurantId);
-		wss.sendMessage({restaurantId, ...voteInfo});
+		const response = { restaurantId, ...voteInfo };
+		wss.sendMessage(response);
 
-		res.status(200).json({ success: true });
+		res.status(200).json(response);
 	} catch (err) {
 		next(err);
 		res.status(400).send(err);
@@ -194,7 +204,7 @@ export const addCustomRestaurant = async (req: Request, res: Response, next: Nex
 			)
 			RETURNING id;
 		`, [name, city, street, delivery, pickup]);
-		
+
 		const restaurantId = result.rows[0].id;
 		const fileExtension = /\.[a-zA-Z]+$/.exec(uploadedImage.name);
 		const fileName = `${restaurantId}${fileExtension}`;

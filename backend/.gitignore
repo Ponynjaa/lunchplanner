@@ -5,3 +5,5 @@
 /project/dist
 /project/.env
 /project/error.log
+/project/.userImages
+/project/.customRestaurantImages
