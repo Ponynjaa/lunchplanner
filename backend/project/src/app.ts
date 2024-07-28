@@ -37,6 +37,7 @@ app.use('/api/v1', [
 app.use(errorHandler);
 
 app.use('/restaurantImages', express.static(path.join(__dirname, '../.customRestaurantImages')));
+app.use('/restaurantMenus', express.static(path.join(__dirname, '../.customRestaurantMenus')));
 app.use('/userImages', express.static(path.join(__dirname, '../.userImages'), {
 	extensions: ['apng', 'avif', 'gif', 'jpg', 'jpeg', 'jfif', 'pjpeg', 'pjp', 'png', 'svg', 'webp', 'bmp', 'ico', 'cur', 'tif', 'tiff']
 }));
@@ -48,12 +49,14 @@ const server = app.listen(PORT, () => {
 export const wss = new WebSocketConfiguration(server);
 
 async function init () {
-	try {
-		await fsp.mkdir(path.join(__dirname, '../.customRestaurantImages'));
-		await fsp.mkdir(path.join(__dirname, '../.userImages'));
-	} catch (error: any) {
-		if (error.code !== 'EEXIST') {
-			console.error(error);
+	const dirNames = ['../.customRestaurantImages', '../.customRestaurantMenus', '../.userImages'];
+	for (const dir of dirNames) {
+		try {
+			await fsp.mkdir(path.join(__dirname, dir));
+		} catch (error: any) {
+			if (error.code !== 'EEXIST') {
+				console.error(error);
+			}
 		}
 	}
 }

@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import path from 'path';
 import fsp from 'fs/promises';
+import { glob } from 'glob';
 import { getUserId, getUserInfo } from '../utils/userinfo.js';
 import * as db from '../../database/db.js';
 import { wss } from '../app.js';
@@ -131,31 +132,7 @@ export const downvote = async (req: Request, res: Response, next: NextFunction) 
 
 export const getAllCustomRestaurants = async (req: Request, res: Response, next: NextFunction) => {
 	try {
-		const result = await db.query(`
-			SELECT r.id AS id, r.name AS name, r.logourl AS logourl, r.city AS city, r.street AS street, r.delivery AS delivery, r.pickup AS pickup, JSON_AGG(
-				JSON_BUILD_OBJECT(
-					'id', sk.id,
-					'description_de', sk.description_de,
-					'description_en', sk.description_en
-				)
-			) AS subkitchens, SUM(CASE WHEN rv.upvote THEN 1 ELSE -1 END) AS votes
-			FROM lunchplanner.restaurants r
-			JOIN lunchplanner.restaurants_subkitchens rs ON r.id = rs.restaurant_id
-			JOIN lunchplanner.subkitchens sk ON sk.id = rs.subkitchen_id
-			LEFT JOIN lunchplanner.restaurant_votes rv ON rv.restaurant_id = r.id AND rv.date = CURRENT_DATE
-			GROUP BY r.id, r.name, r.logourl, r.city, r.street, r.delivery, r.pickup;
-		`);
-		res.status(200).json(result.rows);
-	} catch (err) {
-		next(err);
-		res.status(400).send(err);
-	}
-}
-
-export const getCustomRestaurantDetails = async (req: Request, res: Response, next: NextFunction) => {
-	try {
-		const { id } = req.query;
-		const result = await db.query(`
+		const restaurants = (await db.query(`
 			SELECT r.id AS id, r.name AS name, r.logourl AS logourl, r.city AS city, r.street AS street, r.delivery AS delivery, r.pickup AS pickup, JSON_AGG(
 				JSON_BUILD_OBJECT(
 					'id', sk.id,
@@ -166,8 +143,45 @@ export const getCustomRestaurantDetails = async (req: Request, res: Response, ne
 			FROM lunchplanner.restaurants r
 			JOIN lunchplanner.restaurants_subkitchens rs ON r.id = rs.restaurant_id
 			JOIN lunchplanner.subkitchens sk ON sk.id = rs.subkitchen_id
-			WHERE r.id = $1
 			GROUP BY r.id, r.name, r.logourl, r.city, r.street, r.delivery, r.pickup;
+		`)).rows;
+
+		// TODO: add type in models
+		const result: any[] = [];
+		for (const restaurant of restaurants) {
+			const voteInfo = await getVoteInfos(restaurant.id as string);
+			const { votes, upvotes, downvotes } = voteInfo;
+			result.push({
+				...restaurant,
+				votes,
+				upvotes,
+				downvotes
+			});
+		}
+
+		res.status(200).json(result);
+	} catch (err) {
+		next(err);
+		res.status(400).send(err);
+	}
+}
+
+export const getCustomRestaurantDetails = async (req: Request, res: Response, next: NextFunction) => {
+	try {
+		const { id } = req.query;
+		const result = await db.query(`
+			SELECT r.id AS id, r.name AS name, r.logourl AS logourl, r.menuurl AS menuurl, r.city AS city, r.street AS street, r.delivery AS delivery, r.pickup AS pickup, JSON_AGG(
+				JSON_BUILD_OBJECT(
+					'id', sk.id,
+					'description_de', sk.description_de,
+					'description_en', sk.description_en
+				)
+			) AS subkitchens
+			FROM lunchplanner.restaurants r
+			JOIN lunchplanner.restaurants_subkitchens rs ON r.id = rs.restaurant_id
+			JOIN lunchplanner.subkitchens sk ON sk.id = rs.subkitchen_id
+			WHERE r.id = $1
+			GROUP BY r.id, r.name, r.logourl, r.menuurl, r.city, r.street, r.delivery, r.pickup;
 		`, [id]);
 		res.status(200).json(result.rows[0]);
 	} catch (err) {
@@ -181,13 +195,19 @@ export const addCustomRestaurant = async (req: Request, res: Response, next: Nex
 
 	try {
 		if (!req.files?.image) {
-			return res.status(400).send("No image file was sent!");
+			return res.status(400).send("No logo image was sent!");
+		}
+		if (!req.files?.menu) {
+			return res.status(400).send("No menu was sent!");
 		}
 
 		const uploadedImage = req.files.image as any;
-		const mimeType = uploadedImage.mimetype;
-		if (!/^image\//.test(mimeType)) {
-			return res.status(400).send("Invalid mime type " + mimeType);
+		const uploadedMenu = req.files.menu as any;
+		if (!/^image\//.test(uploadedImage.mimetype)) {
+			return res.status(400).send(`Invalid mime type for logo image: ${uploadedImage.mimetype}`);
+		}
+		if (uploadedMenu.mimetype !== 'application/pdf') {
+			return res.status(400).send(`Invalid mime type for menu: ${uploadedMenu.mimetype}`);
 		}
 
 		let { name, city, street, subkitchenIds, delivery, pickup } = req.body as any;
@@ -206,16 +226,20 @@ export const addCustomRestaurant = async (req: Request, res: Response, next: Nex
 		`, [name, city, street, delivery, pickup]);
 
 		const restaurantId = result.rows[0].id;
-		const fileExtension = /\.[a-zA-Z]+$/.exec(uploadedImage.name);
-		const fileName = `${restaurantId}${fileExtension}`;
-		const logoUrl = `${process.env.SERVER_URL}/restaurantImages/${fileName}`;
+		const logoFileExtension = /\.[a-zA-Z]+$/.exec(uploadedImage.name);
+		const logoFileName = `${restaurantId}${logoFileExtension}`;
+		const logoUrl = `${process.env.SERVER_URL}/restaurantImages/${logoFileName}`;
 
-		// update just inserted row and set logourl
+		const menuFileName = `${restaurantId}.pdf`;
+		const menuUrl = `${process.env.SERVER_URL}/restaurantMenus/${menuFileName}`;
+
+		// update just inserted row and set logourl and menuurl
 		await dbClient.query(`
 			UPDATE lunchplanner.restaurants
-			SET logourl = $1
-			WHERE id = $2;
-		`, [logoUrl, restaurantId]);
+			SET logourl = $1,
+				menuurl = $2
+			WHERE id = $3;
+		`, [logoUrl, menuUrl, restaurantId]);
 
 		for (const subkitchenId of subkitchenIds) {
 			await dbClient.query(`
@@ -227,20 +251,27 @@ export const addCustomRestaurant = async (req: Request, res: Response, next: Nex
 			]);
 		}
 
-		const restaurantImagesDir = path.join(__dirname, '../../.customRestaurantImages');
-		const files = await fsp.readdir(restaurantImagesDir);
-
-		const existingRestaurantImagePath = files.find(file => file.startsWith(`${restaurantId}.`));
-		if (existingRestaurantImagePath) {
-			await fsp.rm(path.join(restaurantImagesDir, existingRestaurantImagePath));
+		const logoDir = path.join(__dirname, '../../.customRestaurantImages');
+		const logoFiles = await glob(`${restaurantId}.*`, { cwd: logoDir });
+		for (const logoFile of logoFiles) {
+			await fsp.rm(path.join(logoDir, logoFile));
 		}
 
-		const uploadPath = path.join(restaurantImagesDir, fileName);
-		await uploadedImage.mv(uploadPath);
+		const menuDir = path.join(__dirname, '../../.customRestaurantMenus');
+		const menuFiles = await glob(`${restaurantId}.*`, { cwd: menuDir });
+		for (const menuFile of menuFiles) {
+			await fsp.rm(path.join(menuDir, menuFile));
+		}
+
+		const logoUploadPath = path.join(logoDir, logoFileName);
+		await uploadedImage.mv(logoUploadPath);
+
+		const menuUploadPath = path.join(menuDir, menuFileName);
+		await uploadedMenu.mv(menuUploadPath);
 
 		await dbClient.query('COMMIT');
 
-		res.status(200).json({ success: true, restaurantId: restaurantId, logoUrl: logoUrl });
+		res.status(200).json({ success: true, restaurantId, logoUrl, menuUrl });
 	} catch (err) {
 		await dbClient.query('ROLLBACK');
 		next(err);
