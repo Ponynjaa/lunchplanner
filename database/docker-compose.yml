@@ -1,6 +1,6 @@
 services:
   db:
-    image: postgres
+    image: postgis/postgis
     restart: always
     environment:
       POSTGRES_PASSWORD: ${DB_PASSWORD}
