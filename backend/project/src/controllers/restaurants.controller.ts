@@ -1,45 +1,48 @@
 import { Request, Response, NextFunction } from 'express';
-import path from 'path';
-import fsp from 'fs/promises';
-import { glob } from 'glob';
-import { getUserId, getUserInfo } from '../utils/userinfo.js';
+import { getKeycloakId, getKeycloakUserInfo } from '../utils/user.js';
 import * as db from '../../database/db.js';
 import { wss } from '../app.js';
 import { takeaway } from '../config/takeaway.config.js';
 
-const __dirname = import.meta.dirname;
-
-const getVoteInfos = async (restaurantId: string) => {
-	const result = await db.query(`
-		SELECT
-			lieferando,
-			SUM(CASE WHEN upvote THEN 1 ELSE -1 END) AS votes,
-			COALESCE(ARRAY_AGG(user_id) FILTER(WHERE upvote = true), '{}') AS upvotes,
-			COALESCE(ARRAY_AGG(user_id) FILTER(WHERE upvote = false), '{}') AS downvotes
-		FROM lunchplanner.restaurant_votes
-		WHERE date = CURRENT_DATE AND restaurant_id = $1
-		GROUP BY lieferando;
-	`, [restaurantId]);
-
-	const infos = result.rows[0] ?? {
+const getVoteInfos = async (sessionId: number|null, restaurantId: string) => {
+	let infos: {votes: number|null, upvotes: any[], downvotes: any[]} = {
 		votes: null,
 		upvotes: [],
 		downvotes: []
 	};
 
-	if (infos.votes !== null) {
-		infos.votes = parseInt(infos.votes);
+	if (!sessionId) {
+		return infos;
+	}
+
+	const result = await db.query(`
+		SELECT
+			type,
+			SUM(CASE WHEN upvote THEN 1 ELSE -1 END) AS votes,
+			COALESCE(JSON_AGG(JSON_BUILD_OBJECT('user_id', user_id, 'image', u.image)) FILTER(WHERE upvote = true), '{}') AS upvotes,
+			COALESCE(JSON_AGG(JSON_BUILD_OBJECT('user_id', user_id, 'image', u.image)) FILTER(WHERE upvote = false), '{}') AS downvotes
+		FROM restaurant_votes
+		WHERE session_id = $1 AND restaurant_id = $2
+		JOIN users u ON user_id = u.id
+		GROUP BY type;
+	`, [sessionId, restaurantId]);
+
+	const row = result.rows[0];
+	if (row) {
+		infos.votes = parseInt(row.votes);
+		infos.upvotes = infos.upvotes;
+		infos.downvotes = infos.downvotes;
 	}
 
 	const getMappedVotes = async (votes: any[]) => {
 		const mappedVotes = [];
 
-		for (const id of votes) {
-			const userInfo = await getUserInfo(id);
-			const userImage = `${process.env.SERVER_URL}/userImages/${id}`;
+		for (const vote of votes) {
+			const { id, image } = vote;
+			const userInfo = await getKeycloakUserInfo(id);
 			mappedVotes.push({
 				id: id,
-				userImage: userImage,
+				userImage: image,
 				firstName: userInfo?.firstName,
 				lastName: userInfo?.lastName
 			});
@@ -56,24 +59,24 @@ const getVoteInfos = async (restaurantId: string) => {
 
 export const removeVote = async (req: Request, res: Response, next: NextFunction) => {
 	try {
-		const { restaurantId } = req.body;
-		const userId = getUserId(req);
+		const { restaurantId, sessionId } = req.body;
+		const userId = getKeycloakId(req);
 
 		const result = await db.query(`
-			DELETE FROM lunchplanner.restaurant_votes
-			WHERE restaurant_id = $1 AND user_id = $2
-			RETURNING lieferando;
-		`, [restaurantId, userId]);
+			DELETE FROM restaurant_votes
+			WHERE restaurant_id = $1 AND user_id = $2 AND session_id = $3
+			RETURNING type;
+		`, [restaurantId, userId, sessionId]);
 
-		// need to retrieve lieferando info here as row is deleted
+		// need to retrieve type info here as row is deleted
 		// therefore `getVoteInfos` might not be able to retrieve any
 		// rows for this restaurant when this was the last vote
-		const lieferando = result.rows[0].lieferando;
+		const type = result.rows[0].type;
 
 		// notify all clients of new votes for restaurant
-		const voteInfo = await getVoteInfos(restaurantId);
-		const response = { restaurantId, ...voteInfo, lieferando };
-		wss.sendMessage(response);
+		const voteInfo = await getVoteInfos(sessionId, restaurantId);
+		const response = { restaurantId, ...voteInfo, type };
+		wss.sendMessage(sessionId, response);
 
 		res.status(200).json(response);
 	} catch (err) {
@@ -84,20 +87,20 @@ export const removeVote = async (req: Request, res: Response, next: NextFunction
 
 export const upvote = async (req: Request, res: Response, next: NextFunction) => {
 	try {
-		const { restaurantId, restaurantName, lieferando } = req.body;
-		const userId = getUserId(req);
+		const { restaurantId, type, sessionId } = req.body;
+		const userId = getKeycloakId(req);
 
 		await db.query(`
-			INSERT INTO lunchplanner.restaurant_votes (restaurant_id, restaurant_name, lieferando, user_id, upvote)
-			VALUES ($1, $2, $3, $4, true)
-			ON CONFLICT (restaurant_id, date, user_id) DO
+			INSERT INTO restaurant_votes (restaurant_id, type, user_id, session_id, upvote)
+			VALUES ($1, $2, $3, $4, $5, true)
+			ON CONFLICT (restaurant_id, session_id, user_id) DO
 			UPDATE SET upvote = true;
-		`, [restaurantId, restaurantName, lieferando, userId]);
+		`, [restaurantId, type, userId, sessionId]);
 
 		// notify all clients of new votes for restaurant
-		const voteInfo = await getVoteInfos(restaurantId);
+		const voteInfo = await getVoteInfos(sessionId, restaurantId);
 		const response = { restaurantId, ...voteInfo };
-		wss.sendMessage(response);
+		wss.sendMessage(sessionId, response);
 
 		res.status(200).json(response);
 	} catch (err) {
@@ -108,20 +111,20 @@ export const upvote = async (req: Request, res: Response, next: NextFunction) =>
 
 export const downvote = async (req: Request, res: Response, next: NextFunction) => {
 	try {
-		const { restaurantId, restaurantName, lieferando } = req.body;
-		const userId = getUserId(req);
+		const { restaurantId, type, sessionId } = req.body;
+		const userId = getKeycloakId(req);
 
 		await db.query(`
-			INSERT INTO lunchplanner.restaurant_votes (restaurant_id, restaurant_name, lieferando, user_id, upvote)
+			INSERT INTO restaurant_votes (restaurant_id, type, user_id, session_id, upvote)
 			VALUES ($1, $2, $3, $4, false)
 			ON CONFLICT (restaurant_id, date, user_id) DO
 			UPDATE SET upvote = false;
-		`, [restaurantId, restaurantName, lieferando, userId]);
+		`, [restaurantId, type, userId, sessionId]);
 
 		// notify all clients of new votes for restaurant
-		const voteInfo = await getVoteInfos(restaurantId);
+		const voteInfo = await getVoteInfos(sessionId, restaurantId);
 		const response = { restaurantId, ...voteInfo };
-		wss.sendMessage(response);
+		wss.sendMessage(sessionId, response);
 
 		res.status(200).json(response);
 	} catch (err) {
@@ -132,25 +135,31 @@ export const downvote = async (req: Request, res: Response, next: NextFunction) 
 
 export const getAllCustomRestaurants = async (req: Request, res: Response, next: NextFunction) => {
 	try {
+		const { sessionId, longitude, latitude, range } = req.query;
+		const parsedSessionId = sessionId ? parseInt(sessionId.toString()) : null;
+
 		const restaurants = (await db.query(`
-			SELECT r.id AS id, r.name AS name, r.logourl AS logourl, r.city AS city, r.street AS street, r.delivery AS delivery, r.pickup AS pickup, JSON_AGG(
+			SELECT r.id AS id, r.name AS name, r.location AS location, r.logo AS logo, r.city AS city, r.street AS street, r.delivery AS delivery, r.pickup AS pickup, JSON_AGG(
 				JSON_BUILD_OBJECT(
 					'id', sk.id,
 					'description_de', sk.description_de,
 					'description_en', sk.description_en
 				)
 			) AS subkitchens
-			FROM lunchplanner.restaurants r
-			JOIN lunchplanner.restaurants_subkitchens rs ON r.id = rs.restaurant_id
-			JOIN lunchplanner.subkitchens sk ON sk.id = rs.subkitchen_id
-			GROUP BY r.id, r.name, r.logourl, r.city, r.street, r.delivery, r.pickup;
-		`)).rows;
+			FROM restaurants r
+			JOIN restaurants_subkitchens rs ON r.id = rs.restaurant_id
+			JOIN subkitchens sk ON sk.id = rs.subkitchen_id
+			WHERE ST_DWithin(r.location, ST_MakePoint($1, $2)::geography, $3)
+			GROUP BY r.id, r.name, r.location, r.logo, r.city, r.street, r.delivery, r.pickup;
+		`, [longitude, latitude, range ?? 5_000])).rows;
 
 		// TODO: add type in models
 		const result: any[] = [];
 		for (const restaurant of restaurants) {
-			const voteInfo = await getVoteInfos(restaurant.id as string);
+			const voteInfo = await getVoteInfos(parsedSessionId, restaurant.id as string);
 			const { votes, upvotes, downvotes } = voteInfo;
+
+			restaurant.logo = `data:application/octet-stream;base64,${restaurant.logo.toString('base64')}`;
 			result.push({
 				...restaurant,
 				votes,
@@ -168,22 +177,45 @@ export const getAllCustomRestaurants = async (req: Request, res: Response, next:
 
 export const getCustomRestaurantDetails = async (req: Request, res: Response, next: NextFunction) => {
 	try {
-		const { id } = req.query;
+		const { id, longitude, latitude } = req.query;
 		const result = await db.query(`
-			SELECT r.id AS id, r.name AS name, r.logourl AS logourl, r.menuurl AS menuurl, r.city AS city, r.street AS street, r.delivery AS delivery, r.pickup AS pickup, JSON_AGG(
+			SELECT r.id AS id, r.name AS name, r.location AS location, r.logo AS logo, r.menu AS menu, r.city AS city, r.street AS street, r.delivery AS delivery, r.pickup AS pickup,
+			ST_Distance(ST_MakePoint($2, $3)::geography, r.location) AS distance, JSON_AGG(
 				JSON_BUILD_OBJECT(
 					'id', sk.id,
 					'description_de', sk.description_de,
 					'description_en', sk.description_en
 				)
 			) AS subkitchens
-			FROM lunchplanner.restaurants r
-			JOIN lunchplanner.restaurants_subkitchens rs ON r.id = rs.restaurant_id
-			JOIN lunchplanner.subkitchens sk ON sk.id = rs.subkitchen_id
+			FROM restaurants r
+			JOIN restaurants_subkitchens rs ON r.id = rs.restaurant_id
+			JOIN subkitchens sk ON sk.id = rs.subkitchen_id
 			WHERE r.id = $1
-			GROUP BY r.id, r.name, r.logourl, r.menuurl, r.city, r.street, r.delivery, r.pickup;
+			GROUP BY r.id, r.name, r.location, r.logo, r.menu, r.city, r.street, r.delivery, r.pickup, distance;
+		`, [id, longitude, latitude]);
+
+		const restaurant = result.rows[0];
+		restaurant.logo = `data:application/octet-stream;base64,${restaurant.logo.toString('base64')}`;
+
+		res.status(200).json(restaurant);
+	} catch (err) {
+		next(err);
+		res.status(400).send(err);
+	}
+}
+
+export const getCustomRestaurantPdf = async (req: Request, res: Response, next: NextFunction) => {
+	try {
+		const { id } = req.query;
+
+		const result = await db.query(`
+			SELECT menu FROM restaurants
+			WHERE id = $1;
 		`, [id]);
-		res.status(200).json(result.rows[0]);
+
+		const menu = result.rows[0].menu;
+
+		res.setHeader('Content-Type', 'application/pdf').status(200).send(menu);
 	} catch (err) {
 		next(err);
 		res.status(400).send(err);
@@ -210,40 +242,25 @@ export const addCustomRestaurant = async (req: Request, res: Response, next: Nex
 			return res.status(400).send(`Invalid mime type for menu: ${uploadedMenu.mimetype}`);
 		}
 
-		let { name, city, street, subkitchenIds, delivery, pickup } = req.body as any;
+		let { name, longitude, latitude, city, street, subkitchenIds, delivery, pickup } = req.body as any;
 		subkitchenIds = JSON.parse(subkitchenIds);
 
 		await dbClient.query('BEGIN');
 
-		// insert without logourl as the id is being used for the logourl
 		const result = await dbClient.query(`
-			INSERT INTO lunchplanner.restaurants (
-				name, city, street, delivery, pickup
+			INSERT INTO restaurants (
+				name, logo, menu, location, city, street, delivery, pickup
 			) VALUES (
-				$1, $2, $3, $4, $5
+				$1, $2, $3, ST_MakePoint($4, $5)::geography, $6, $7, $8, $9
 			)
 			RETURNING id;
-		`, [name, city, street, delivery, pickup]);
+		`, [name, uploadedImage.data, uploadedMenu.data, longitude, latitude, city, street, delivery, pickup]);
 
 		const restaurantId = result.rows[0].id;
-		const logoFileExtension = /\.[a-zA-Z]+$/.exec(uploadedImage.name);
-		const logoFileName = `${restaurantId}${logoFileExtension}`;
-		const logoUrl = `${process.env.SERVER_URL}/restaurantImages/${logoFileName}`;
-
-		const menuFileName = `${restaurantId}.pdf`;
-		const menuUrl = `${process.env.SERVER_URL}/restaurantMenus/${menuFileName}`;
-
-		// update just inserted row and set logourl and menuurl
-		await dbClient.query(`
-			UPDATE lunchplanner.restaurants
-			SET logourl = $1,
-				menuurl = $2
-			WHERE id = $3;
-		`, [logoUrl, menuUrl, restaurantId]);
 
 		for (const subkitchenId of subkitchenIds) {
 			await dbClient.query(`
-				INSERT INTO lunchplanner.restaurants_subkitchens (restaurant_id, subkitchen_id) VALUES ($1, $2)
+				INSERT INTO restaurants_subkitchens (restaurant_id, subkitchen_id) VALUES ($1, $2)
 				ON CONFLICT (restaurant_id, subkitchen_id) DO
 				UPDATE SET restaurant_id=$1, subkitchen_id=$2;
 			`, [
@@ -251,27 +268,9 @@ export const addCustomRestaurant = async (req: Request, res: Response, next: Nex
 			]);
 		}
 
-		const logoDir = path.join(__dirname, '../../.customRestaurantImages');
-		const logoFiles = await glob(`${restaurantId}.*`, { cwd: logoDir });
-		for (const logoFile of logoFiles) {
-			await fsp.rm(path.join(logoDir, logoFile));
-		}
-
-		const menuDir = path.join(__dirname, '../../.customRestaurantMenus');
-		const menuFiles = await glob(`${restaurantId}.*`, { cwd: menuDir });
-		for (const menuFile of menuFiles) {
-			await fsp.rm(path.join(menuDir, menuFile));
-		}
-
-		const logoUploadPath = path.join(logoDir, logoFileName);
-		await uploadedImage.mv(logoUploadPath);
-
-		const menuUploadPath = path.join(menuDir, menuFileName);
-		await uploadedMenu.mv(menuUploadPath);
-
 		await dbClient.query('COMMIT');
 
-		res.status(200).json({ success: true, restaurantId, logoUrl, menuUrl });
+		res.status(200).json({ success: true, restaurantId });
 	} catch (err) {
 		await dbClient.query('ROLLBACK');
 		next(err);
@@ -283,7 +282,8 @@ export const addCustomRestaurant = async (req: Request, res: Response, next: Nex
 
 export const getAllLieferandoRestaurants = async (req: Request, res: Response, next: NextFunction) => {
 	try {
-		const { postalCode, latitude, longitude } = req.query as any;
+		const { sessionId, postalCode, latitude, longitude } = req.query as any;
+		const parsedSessionId = sessionId ? parseInt(sessionId.toString()) : null;
 		const country = await takeaway.getCountryById('DE');
 		const restaurants = await country.getRestaurants(postalCode, latitude, longitude);
 
@@ -310,7 +310,7 @@ export const getAllLieferandoRestaurants = async (req: Request, res: Response, n
 		// TODO: add type in models
 		const result: any[] = [];
 		for (const restaurant of restaurants) {
-			const voteInfo = await getVoteInfos(restaurant.id as string);
+			const voteInfo = await getVoteInfos(parsedSessionId, restaurant.id as string);
 			const { votes, upvotes, downvotes } = voteInfo;
 
 			result.push({
@@ -351,7 +351,7 @@ export const getAllLieferandoRestaurants = async (req: Request, res: Response, n
 const getSubkitchens = async (ids: number[]) => {
 	const result = await db.query(`
 		SELECT id, description_de, description_en
-		FROM lunchplanner.subkitchens
+		FROM subkitchens
 		WHERE id = ANY ($1);
 		`, [ids]);
 
@@ -369,8 +369,8 @@ export const getAllKitchens = async (req: Request, res: Response, next: NextFunc
 						'description_en', sk.description_en
 					)
 				) AS subkitchens
-			FROM lunchplanner.subkitchens sk
-			JOIN lunchplanner.kitchens k ON k.id = sk.kitchen_id
+			FROM subkitchens sk
+			JOIN kitchens k ON k.id = sk.kitchen_id
 			GROUP BY k.id, k.description_de, k.description_en;
 		`);
 		res.status(200).json(result.rows);

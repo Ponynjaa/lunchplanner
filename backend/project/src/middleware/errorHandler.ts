@@ -5,7 +5,7 @@ const errorHandler = (err: any, req: Request, res: Response, next: NextFunction)
 	const errStatus = err.statusCode || 500;
 	const errMsg = err.message || 'Something went wrong';
 	logger.error('An error occurred:', err);
-	next();
+	// next();
 }
 
 export default errorHandler;
